@@ -1,4 +1,4 @@
-name: Build, Analyze, Scan
+name: Build, Analyze, Scan and Deploy
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-analyze-scan:
-    name: Build
+    name: Build, Analyze and Scan
     runs-on: [eks]
     steps:
       - name: Checkout code
@@ -27,18 +27,50 @@ jobs:
       - name: Trivy file scan
         run: trivy fs . > trivyfs.txt
 
-      - name: Login to Docker Hub   # ← Login BEFORE build
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_token }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Docker Build and Push
+      - name: Docker Build and push
         run: |
           docker build -t tic-tac-toe .
           docker tag tic-tac-toe ${{ secrets.DOCKERHUB_USERNAME }}/tic-tac-toe:latest
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/tic-tac-toe:latest
 
-      - name: Trivy image scan
+      - name: Image scan
+        run: trivy image ${{ secrets.DOCKERHUB_USERNAME }}/tic-tac-toe:latest > trivyimage.txt
+
+  deploy:
+    name: Deploy
+    needs: build-analyze-scan        # runs only after build job succeeds
+    runs-on: [self-hosted]
+    steps:
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: docker pull image
+        run: docker pull ${{ secrets.DOCKERHUB_USERNAME }}/tic-tac-toe:latest
+
+      - name: Image scan
         run: |
-          trivy image ${{ secrets.DOCKERHUB_USERNAME }}/tic-tac-toe:latest > trivyimage.txt
+          trivy image ${{ secrets.DOCKERHUB_USERNAME }}/tic-tac-toe:latest \
+            > trivyimagedeploy.txt
+
+      - name: Deploy to container
+        run: |
+          docker stop game || true
+          docker rm game || true
+          docker run -d \
+            --name game \
+            -p 3000:3000 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/tic-tac-toe:latest
+
+      - name: Verify deployment
+        run: |
+          docker ps | grep game
+          echo "App running at http://$(curl -s ifconfig.me):3000"
